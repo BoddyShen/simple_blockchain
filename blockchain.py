@@ -128,8 +128,24 @@ class Transaction:
         """
         # if you are taking 461: return True
         # return True
+        # total_input = 0
+        # for input in self.inputs:
+        #     if (input.txHash, input.txIdx) not in unspentOutputDict:
+        #         return False
+        #     total_input += unspentOutputDict[(input.txHash, input.txIdx)].amount
+        print("unspentOutputDict", unspentOutputDict)
+        print("self.inputs", self.inputs)
+        print("self.outputs", self.outputs)
+        if not self.inputs:
+            return True
+        
+        for input in self.inputs:
+            if (input.txHash, input.txIdx) not in unspentOutputDict:
+                return False
+            
         total_input = sum(unspentOutputDict[(input.txHash, input.txIdx)].amount for input in self.inputs)
         total_output = sum(output.amount for output in self.outputs)
+        print("unspentOutputDict", unspentOutputDict)
 
         if total_input < total_output:
             return False
@@ -182,9 +198,12 @@ class BlockContents:
     def __init__(self):
         self.data = HashableMerkleTree()
         self.transactions = []
+        print("Init block contents", self)
 
     def setData(self, d):
         # Ensure that data is a HashableMerkleTree
+        print("set transaction data", d)
+        print("type(d)", type(d))
         if isinstance(d, list):
             self.transactions = d
             self.data = HashableMerkleTree(d)
@@ -211,7 +230,7 @@ class Block:
         self.priorHash = 0
         self.target = 0
         self.nonce = 0
-        self.transactions = self.contents.transactions
+        print("Init block", self)
 
     def getContents(self):
         """ Return the Block content (a BlockContents object)"""
@@ -220,6 +239,7 @@ class Block:
     def setContents(self, data):
         """ set the contents of this block's merkle tree to the list of objects in the data parameter """
         self.contents.setData(data)
+        print(f'''setContents {self.contents} at block {self}''')
 
     def setTarget(self, target):
         """ Set the difficulty target of this block """
@@ -237,6 +257,7 @@ class Block:
     def setPriorBlockHash(self, priorHash):
         """ Assign the parent block hash """
         self.priorHash = priorHash
+        print(f'''setPriorBlockHash {self.priorHash} at block {self}''')
 
     def getPriorBlockHash(self):
         """ Return the parent block hash """
@@ -265,29 +286,50 @@ class Block:
 
         # Step 2: Initialize a new UTXO set to track changes in this block's transactions
         new_utxo = unspentOutputs.copy()
-
+        transactions = self.contents.transactions
         # Step 3: Validate the coinbase transaction
-        if self.transactions:
-            coinbase = self.transactions[0]
+        print("transactions", transactions)
+        print("unspent_outputs at start of validation:", unspentOutputs)
+        if transactions:
+            # Ensure only the first transaction is the coinbase transaction
+            coinbase = transactions[0]
+
+            if coinbase.inputs is not None:
+                print("Error: First transaction is not a coinbase transaction.")
+                return None
+            
             if not coinbase.validateMint(maxMint):
                 return None  # Coinbase transaction exceeds the minting limit
-
+            
+            # Add coinbase outputs to the UTXO set
+            for idx, output in enumerate(coinbase.outputs):
+                new_utxo[(coinbase.getHash(), idx)] = output
+            
+            print("check1")
             # Step 4: Validate non-coinbase transactions
-            for tx in self.transactions[1:]:
+            for tx in transactions[1:]:
+                if tx.inputs is None:
+                    print("Error: Multiple coinbase transactions detected.")
+                    return None
+                print("check2")
+                print("new_utxo", new_utxo)
                 if not tx.validate(new_utxo):
                     return None  # Invalid transaction detected
-
+                print("check3")
                 # Step 5: Update the UTXO set for each valid transaction
                 # Add transaction outputs to the UTXO set
+                print("tx.outputs", tx.outputs)
                 for idx, output in enumerate(tx.outputs):
                     new_utxo[(tx.getHash(), idx)] = output
-
+                print("Updated new_utxo with transaction outputs:", new_utxo)
                 # Remove inputs from the UTXO set as they are now spent
-                for input in tx.inputs:
-                    if (input.txHash, input.txIdx) in new_utxo:
+                print("tx.inputs", tx.inputs)
+                if tx.inputs:
+                    for input in tx.inputs:
+                        if (input.txHash, input.txIdx) not in new_utxo:
+                            print(f"Input {input.txHash, input.txIdx} not found in UTXO. Test failed.")
+                            return None
                         del new_utxo[(input.txHash, input.txIdx)]
-                    else:
-                        return None  # Input does not exist in UTXO set (double-spending or invalid reference)
 
         # Step 6: Return the updated UTXO set if block is valid
         return new_utxo
@@ -310,10 +352,9 @@ class Blockchain(object):
         genesis = Block()
         genesis.setTarget(genesisTarget)
         genesis.mine(genesisTarget)
-        # self.blocks.append(genesis)
         self.blocks[genesis.getHash()] = genesis
-
         self.cumulative_work[genesis.getHash()] = self.getWork(genesisTarget)
+        print("Init blockchain", self)
 
     def getTip(self):
         """ Return the block at the tip (end) of the blockchain fork that has the largest amount of work"""
@@ -359,23 +400,30 @@ class Blockchain(object):
            Return false if the block is invalid (breaks any miner constraints), and do not add it to the blockchain."""
         
         # find the prior block
+        print("block", block)
+        print("block.contents", block.contents)
+        print("block.getHash()", block.getHash())
         print("block.priorHash", block.priorHash)
-        print("block.transactions", block.transactions)
+        print("block.contents.transactions", block.contents.transactions)
 
         prior_block = self.blocks.get(block.priorHash, None)
         if prior_block is None:
+            print("Can't find prior block:", block.priorHash)
             return False
 
         # Retrieve or initialize UTXO state for prior block
         unspent_outputs = self.utxo_state.get(prior_block.getHash(), None)
-        if unspent_outputs is None:
+        print("unspent_outputs", unspent_outputs)
+        if unspent_outputs is None or unspent_outputs == {}:
             # genesis
             unspent_outputs = prior_block.validate({}, self.maxMintCoinsPerTx)
+            print("genesis unspent_outputs", unspent_outputs)
             if unspent_outputs is None:
                 return False
             self.utxo_state[prior_block.getHash()] = unspent_outputs
-        
+        print("check")
         new_utxo_state = block.validate(unspent_outputs, self.maxMintCoinsPerTx)
+        print("new_utxo_state", new_utxo_state)
         if new_utxo_state is None:
             return False
 
